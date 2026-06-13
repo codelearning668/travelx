@@ -1,0 +1,158 @@
+CONTEXT CONDENSING IN LANGCHAIN4J (PERSISTENT CHAT MEMORY)
+
+OVERVIEW
+
+This solution adds context condensing (conversation summarization) to a LangChain4j-based system using:
+
+- MessageWindowChatMemory (sliding window)
+- PersistentChatMemoryStore (MapDB persistence)
+- Custom ChatMemoryStore decorator (CondensingChatMemoryStore)
+- LLM-based summarization
+
+The goal is to automatically compress long conversations while preserving important information.
+
+------------------------------------------------------------
+ARCHITECTURE
+
+LangChain4j Memory Flow:
+
+MessageWindowChatMemory (maxMessages = 10)
+        ↓
+CondensingChatMemoryStore (custom layer)
+        ↓
+PersistentChatMemoryStore (MapDB)
+
+------------------------------------------------------------
+HOW IT WORKS
+
+1. LangChain4j keeps only the last N messages (window memory)
+2. Messages are persisted in MapDB via ChatMemoryStore
+3. When message count exceeds threshold:
+   - older messages are summarized using an LLM
+   - summary replaces old conversation history
+   - recent messages are preserved
+
+------------------------------------------------------------
+IMPLEMENTATION: CONDENSING CHAT MEMORY STORE
+
+public class CondensingChatMemoryStore implements ChatMemoryStore {
+
+    private final ChatMemoryStore delegate;
+    private final ChatLanguageModel summarizerModel;
+    private final int threshold;
+
+    public CondensingChatMemoryStore(
+            ChatMemoryStore delegate,
+            ChatLanguageModel summarizerModel,
+            int threshold
+    ) {
+        this.delegate = delegate;
+        this.summarizerModel = summarizerModel;
+        this.threshold = threshold;
+    }
+
+    @Override
+    public List<ChatMessage> getMessages(Object memoryId) {
+        return delegate.getMessages(memoryId);
+    }
+
+    @Override
+    public void updateMessages(Object memoryId, List<ChatMessage> messages) {
+
+        if (messages == null || messages.size() < threshold) {
+            delegate.updateMessages(memoryId, messages);
+            return;
+        }
+
+        int keepRecent = 6;
+        int splitIndex = Math.max(0, messages.size() - keepRecent);
+
+        List<ChatMessage> oldMessages = messages.subList(0, splitIndex);
+        List<ChatMessage> recentMessages = messages.subList(splitIndex, messages.size());
+
+        StringBuilder input = new StringBuilder();
+        input.append("Summarize the conversation. Keep key facts, decisions, preferences.\n\n");
+
+        for (ChatMessage msg : oldMessages) {
+            input.append(msg.toString()).append("\n");
+        }
+
+        String summary = summarizerModel
+                .generate(UserMessage.from(input.toString()))
+                .content()
+                .text();
+
+        List<ChatMessage> condensed = new ArrayList<>();
+
+        condensed.add(SystemMessage.from(
+                "Conversation summary so far:\n" + summary
+        ));
+
+        condensed.addAll(recentMessages);
+
+        delegate.updateMessages(memoryId, condensed);
+    }
+
+    @Override
+    public void deleteMessages(Object memoryId) {
+        delegate.deleteMessages(memoryId);
+    }
+}
+
+------------------------------------------------------------
+SPRING CONFIGURATION
+
+@Bean
+ChatMemoryStore baseChatMemoryStore() {
+    return new PersistentChatMemoryStore();
+}
+
+@Bean
+ChatMemoryStore chatMemoryStore(
+        ChatMemoryStore baseChatMemoryStore,
+        OpenAiChatModel summarizerModel
+) {
+    return new CondensingChatMemoryStore(
+            baseChatMemoryStore,
+            summarizerModel,
+            20
+    );
+}
+
+@Bean
+MessageWindowChatMemory messageWindowChatMemory(ChatMemoryStore chatMemoryStore) {
+    return MessageWindowChatMemory.builder()
+            .maxMessages(10)
+            .chatMemoryStore(chatMemoryStore)
+            .build();
+}
+
+------------------------------------------------------------
+BEHAVIOR
+
+- Old messages are automatically summarized when threshold is reached
+- Recent messages are preserved verbatim
+- Summary is injected as a SystemMessage
+- Works transparently with AiServices
+- No changes needed in ChatService
+
+------------------------------------------------------------
+BENEFITS
+
+- Prevents context overflow
+- Enables long-term conversational memory
+- Works with persistence (MapDB)
+- Compatible with LangChain4j AiServices
+- Minimal architectural changes
+
+------------------------------------------------------------
+WHEN TO USE
+
+Use this approach when:
+- MessageWindowChatMemory alone is too limiting
+- Conversations need long-term memory
+- Token limits become an issue
+- You want production-style memory management
+
+------------------------------------------------------------
+END
