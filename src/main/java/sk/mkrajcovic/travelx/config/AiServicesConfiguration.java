@@ -19,6 +19,7 @@ import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
 import sk.mkrajcovic.travelx.chat.AircraftExtractor;
 import sk.mkrajcovic.travelx.chat.Assistant;
 import sk.mkrajcovic.travelx.chat.FlightExtractor;
+import sk.mkrajcovic.travelx.memory.CondensingChatMemoryStore;
 import sk.mkrajcovic.travelx.memory.PersistentChatMemoryStore;
 
 @Configuration
@@ -44,10 +45,14 @@ public class AiServicesConfiguration {
 	 * needed.
 	 */
 	@Bean
-	MessageWindowChatMemory messageWindowChatMemory() {
+	MessageWindowChatMemory messageWindowChatMemory(OpenAiChatModel textOpenAiChatModel) {
 		return MessageWindowChatMemory.builder()
 			.maxMessages(10)
-			.chatMemoryStore(new PersistentChatMemoryStore())
+			.chatMemoryStore(new CondensingChatMemoryStore(
+				new PersistentChatMemoryStore(),
+				textOpenAiChatModel,
+				8))
+//			.alwaysKeepSystemMessageFirst(Boolean.TRUE) // aky to ma dopad na vytvaranie novej spravy a memory chatu?
 			.build();
 	}
 
@@ -76,7 +81,7 @@ public class AiServicesConfiguration {
 	Assistant generalChatAssistant(OpenAiChatModel textOpenAiChatModel) {
 		return AiServices.builder(Assistant.class)
 			.chatModel(textOpenAiChatModel)
-			.chatMemory(messageWindowChatMemory())
+			.chatMemory(messageWindowChatMemory(textOpenAiChatModel))
 			.build();
 	}
 
@@ -109,7 +114,7 @@ public class AiServicesConfiguration {
 	Assistant companyKnowledgeAssistant(OpenAiChatModel textOpenAiChatModel, OpenAiEmbeddingModel openAiEmbeddingModel) {
 		return AiServices.builder(Assistant.class)
 			.chatModel(textOpenAiChatModel)
-			.chatMemory(messageWindowChatMemory())
+			.chatMemory(messageWindowChatMemory(textOpenAiChatModel))
 			.contentRetriever(
 				EmbeddingStoreContentRetriever.builder()
 					.embeddingStore(embeddingStore(openAiEmbeddingModel))
